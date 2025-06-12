@@ -1,0 +1,153 @@
+---
+- name: Configure Minecraft Server
+  hosts: all
+  become: true
+  vars:
+    minecraft_user: "minecraft"
+    minecraft_home: "/opt/minecraft"
+    server_memory: "2G"
+    
+  tasks:
+    - name: Update system packages
+      yum:
+        name: "*"
+        state: latest
+
+    - name: Install Java 21 (required for latest Minecraft)
+      yum:
+        name: java-21-amazon-corretto-headless
+        state: present
+
+    - name: Create minecraft user
+      user:
+        name: "{{ minecraft_user }}"
+        system: yes
+        shell: /bin/bash
+        home: "{{ minecraft_home }}"
+        create_home: yes
+
+    - name: Create minecraft directory
+      file:
+        path: "{{ minecraft_home }}"
+        owner: "{{ minecraft_user }}"
+        group: "{{ minecraft_user }}"
+        mode: '0755'
+        state: directory
+
+    - name: Get latest Minecraft version manifest
+      uri:
+        url: "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json"
+        method: GET
+        return_content: yes
+      register: version_manifest
+
+    - name: Extract latest release version
+      set_fact:
+        latest_version: "{{ version_manifest.json.latest.release }}"
+
+    - name: Display version being downloaded
+      debug:
+        msg: "Minecraft version: {{ latest_version }}"
+
+    - name: Get version-specific manifest
+      uri:
+        url: "{{ (version_manifest.json.versions | selectattr('id', 'equalto', latest_version) | list | first).url }}"
+        method: GET
+        return_content: yes
+      register: version_info
+
+    - name: Extract server download URL and hash
+      set_fact:
+        server_jar_url: "{{ version_info.json.downloads.server.url }}"
+        server_jar_sha1: "{{ version_info.json.downloads.server.sha1 }}"
+
+    - name: Download latest Minecraft server jar
+      get_url:
+        url: "{{ server_jar_url }}"
+        dest: "{{ minecraft_home }}/server.jar"
+        owner: "{{ minecraft_user }}"
+        group: "{{ minecraft_user }}"
+        mode: '0644'
+        checksum: "sha1:{{ server_jar_sha1 }}"
+      notify: restart minecraft
+
+    - name: Accept EULA
+      copy:
+        content: "eula=true\n"
+        dest: "{{ minecraft_home }}/eula.txt"
+        owner: "{{ minecraft_user }}"
+        group: "{{ minecraft_user }}"
+        mode: '0644'
+
+    - name: Create server.properties
+      copy:
+        content: |
+          #Minecraft server properties
+          server-port=25565
+          gamemode=survival
+          difficulty=easy
+          spawn-protection=16
+          max-players=20
+          online-mode=true
+          white-list=false
+          motd=AWS Automated Minecraft Server ({{ latest_version }})
+        dest: "{{ minecraft_home }}/server.properties"
+        owner: "{{ minecraft_user }}"
+        group: "{{ minecraft_user }}"
+        mode: '0644'
+      notify: restart minecraft
+
+    - name: Create minecraft systemd service
+      copy:
+        content: |
+          [Unit]
+          Description=Minecraft Server {{ latest_version }}
+          After=network.target
+
+          [Service]
+          Type=simple
+          User={{ minecraft_user }}
+          Group={{ minecraft_user }}
+          WorkingDirectory={{ minecraft_home }}
+          ExecStart=/usr/bin/java -Xmx{{ server_memory }} -Xms{{ server_memory }} -jar server.jar nogui
+          Restart=always
+          RestartSec=10
+
+          [Install]
+          WantedBy=multi-user.target
+        dest: /etc/systemd/system/minecraft.service
+        mode: '0644'
+      notify: 
+        - reload systemd
+        - restart minecraft
+
+    - name: Enable and start minecraft service
+      systemd:
+        name: minecraft
+        enabled: yes
+        state: started
+        daemon_reload: yes
+
+    - name: Wait for server to start
+      wait_for:
+        port: 25565
+        host: "{{ ansible_default_ipv4.address }}"
+        delay: 30
+        timeout: 300
+      ignore_errors: true
+
+    - name: Display connection information
+      debug:
+        msg: 
+          - "Minecraft server is running"
+          - "ip: {{ ansible_default_ipv4.address }}:25565"
+
+  handlers:
+    - name: reload systemd
+      systemd:
+        daemon_reload: yes
+
+    - name: restart minecraft
+      systemd:
+        name: minecraft
+        state: restarted
