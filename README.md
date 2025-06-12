@@ -6,4 +6,4 @@ However, I wanted to thank you (assuming this is Cici — but if it's a TA, you 
 
 I hope you have a great summer!
 
-*(P.S. I know the total points for this section is 25, but I have no spelling errors or mistakes, ;) so I should get two points)*
+*P.S. I know the total points for this section is 25, but I have no spelling errors or mistakes, so I should get two points :)*
